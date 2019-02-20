@@ -25,6 +25,7 @@
 import Foundation
 import StoreKit
 import SystemConfiguration
+import MessageUI
 
 
 @objc open class AppRating: NSObject {
@@ -42,7 +43,7 @@ import SystemConfiguration
     @objc public static func rate() {
         AppRating.manager.rateApp();
     }
-
+    
     /**
      * Explicit call to show the AlertView, asking
      * the user if she/he wants to rate the app.
@@ -64,7 +65,7 @@ import SystemConfiguration
         AppRating.appID = appID
         AppRating.manager.appID = appID
     }
-
+    
     /**
      * Singleton instance of the underlaying rating manager.
      */
@@ -85,9 +86,9 @@ import SystemConfiguration
     @objc public static func daysUntilPrompt() -> Int {
         return AppRating.manager.daysUntilPrompt
     }
-
+    
     /**
-     * Used to set the number of days before the app should 
+     * Used to set the number of days before the app should
      * ask the user for a rating. If you ask people after some
      * days only, the chance for getting better ratings is higher.
      * People who don't like your app will delete it mostly within
@@ -112,8 +113,8 @@ import SystemConfiguration
     @objc public static func usesUntilPrompt() -> Int {
         return AppRating.manager.usesUntilPrompt
     }
-
-
+    
+    
     /**
      * Sets the number of uses needed before the app asks the user
      * to rate the app
@@ -145,6 +146,21 @@ import SystemConfiguration
      */
     @objc public static func daysBeforeReminding(_ daysBeforeReminding: Int) {
         AppRating.manager.daysBeforeReminding = daysBeforeReminding
+    }
+    
+    /**
+     * Indicates if negative reviews should be directed to the mail composer
+     *
+     */
+    @objc public static func emailNegativeReviews() -> Bool {
+        return AppRating.manager.emailNegativeReviews
+    }
+    
+    /**
+     * - Parameter emailNegativeReviews:Indicates if negative reviews should be directed to the mail composer
+     */
+    @objc public static func emailNegativeReviews(_ emailNegativeReviews: Bool) {
+        AppRating.manager.emailNegativeReviews = emailNegativeReviews
     }
     
     /**
@@ -207,7 +223,7 @@ import SystemConfiguration
         AppRating.manager.useMainAppBundleForLocalizations = useMainAppBundleForLocalizations
     }
     
-
+    
     /**
      * Enables the debug mode, so a lot of information is printed out to
      * the console
@@ -245,7 +261,7 @@ import SystemConfiguration
     }
     
     /**
-     * Availabe for iOS 10.3+ 
+     * Availabe for iOS 10.3+
      * Will use the new Apple App Rating Feature if
      * set to true. Apple decides wheter it is the right
      * time to present the review screen, so it may not be
@@ -301,7 +317,7 @@ import SystemConfiguration
     
 }
 
-open class AppRatingManager : NSObject {
+open class AppRatingManager : NSObject, MFMailComposeViewControllerDelegate {
     
     // MARK: -
     // MARK: Public Members
@@ -321,6 +337,7 @@ open class AppRatingManager : NSObject {
     @objc public var useSKStoreReviewController : Bool = true;
     @objc public var ratingConditionsAlwaysTrue: Bool = false;
     @objc public var debugEnabled : Bool = false;
+    @objc public var emailNegativeReviews : Bool = true;
     
     // MARK: -
     // MARK: Optional Closures
@@ -365,7 +382,7 @@ open class AppRatingManager : NSObject {
             if #available(iOS 10.3, *) {
                 UIApplication.shared.open(URL(string: reviewURLString())!, options: [:], completionHandler: nil);
             } else {
-               UIApplication.shared.openURL(URL(string: reviewURLString())!)
+                UIApplication.shared.openURL(URL(string: reviewURLString())!)
             }
         } else {
             if #available(iOS 10.3, *) {
@@ -378,49 +395,98 @@ open class AppRatingManager : NSObject {
     
     fileprivate func showRatingAlert() {
         DispatchQueue.main.asyncAfter(deadline: .now() + self.secondsBeforePromptIsShown) {
-            if (self.useSKStoreReviewController && self.defaultOpensInSKStoreReviewController()) {
-                if #available(iOS 10.3, *) {
-                    SKStoreReviewController.requestReview();
-                    self.remindMeLater();
-                }
-            } else {
-                if (self.ratingAlert == nil) {
-                    let alertView : UIAlertController = UIAlertController(title: self.defaultReviewTitle(), message: self.defaultReviewMessage(), preferredStyle: UIAlertController.Style.alert)
-                    alertView.addAction(UIAlertAction(title: self.defaultCancelButtonTitle(), style:UIAlertAction.Style.cancel, handler: {
-                        (alert: UIAlertAction!) in
-                        self.dontRate();
-                        self.hideRatingAlert();
-                    }))
-                    if (self.showsRemindButton()) {
-                        if let defaultremindtitle = self.defaultRemindButtonTitle() {
-                            alertView.addAction(UIAlertAction(title: defaultremindtitle, style:UIAlertAction.Style.default, handler: {
-                                (alert: UIAlertAction!) in
-                                self.remindMeLater();
-                                self.hideRatingAlert();
-                            }))
-                        }
-                    }
-                    alertView.addAction(UIAlertAction(title: self.defaultRateButtonTitle(), style:UIAlertAction.Style.default, handler: {
-                        (alert: UIAlertAction!) in
-                        self._rateApp();
-                        self.hideRatingAlert();
-                    }))
-                    
-                    // get the top most controller (= the StoreKit Controller) and dismiss it
-                    if let presentingController = UIApplication.shared.keyWindow?.rootViewController {
-                        if let topController = self.topMostViewController(presentingController) {
-                            topController.present(alertView, animated: self.usesAnimation) {
-                                self.debugLog("presentViewController() completed")
-                            }
-                        }
-                        // note that tint color has to be set after the controller is presented in order to take effect (last checked in iOS 9.3)
-                        alertView.view.tintColor = self.tintColor
-                    }
-                    self.ratingAlert = alertView;
-                }
+            if self.emailNegativeReviews {
+                self.presentReviewPrompt()
+            }
+            else {
+                self.presentNativeReviewPrompt()
             }
         }
+    }
+    
+    fileprivate func presentNativeReviewPrompt() {
+        if (self.useSKStoreReviewController && self.defaultOpensInSKStoreReviewController()) {
+            if #available(iOS 10.3, *) {
+                SKStoreReviewController.requestReview();
+                self.remindMeLater();
+            }
+        } else {
+            if (self.ratingAlert == nil) {
+                let alertView : UIAlertController = UIAlertController(title: self.defaultReviewTitle(), message: self.defaultReviewMessage(), preferredStyle: UIAlertController.Style.alert)
+                alertView.addAction(UIAlertAction(title: self.defaultCancelButtonTitle(), style:UIAlertAction.Style.cancel, handler: {
+                    (alert: UIAlertAction!) in
+                    self.dontRate();
+                    self.hideRatingAlert();
+                }))
+                if (self.showsRemindButton()) {
+                    if let defaultremindtitle = self.defaultRemindButtonTitle() {
+                        alertView.addAction(UIAlertAction(title: defaultremindtitle, style:UIAlertAction.Style.default, handler: {
+                            (alert: UIAlertAction!) in
+                            self.remindMeLater();
+                            self.hideRatingAlert();
+                        }))
+                    }
+                }
+                alertView.addAction(UIAlertAction(title: self.defaultRateButtonTitle(), style:UIAlertAction.Style.default, handler: {
+                    (alert: UIAlertAction!) in
+                    self._rateApp();
+                    self.hideRatingAlert();
+                }))
+                
+                // get the top most controller (= the StoreKit Controller) and dismiss it
+                if let presentingController = UIApplication.shared.keyWindow?.rootViewController {
+                    if let topController = self.topMostViewController(presentingController) {
+                        topController.present(alertView, animated: self.usesAnimation) {
+                            self.debugLog("presentViewController() completed")
+                        }
+                    }
+                    // note that tint color has to be set after the controller is presented in order to take effect (last checked in iOS 9.3)
+                    alertView.view.tintColor = self.tintColor
+                }
+                self.ratingAlert = alertView;
+            }
+        }
+    }
+    
+    fileprivate func presentReviewPrompt() {
+        guard let presentingController = UIApplication.shared.keyWindow?.rootViewController,
+            let topController = topMostViewController(presentingController)  else {
+                return
+        }
+        let alertView = UIAlertController(title: "", message: "Please, take the time to rate our app. Do you enjoy \(defaultAppName())?", preferredStyle: .alert)
+        alertView.view.tintColor = self.tintColor
         
+        alertView.addAction(UIAlertAction(title: "No", style: .default, handler: { (action) in
+            DispatchQueue.main.async {
+                self.setUserHasRatedApp()
+                let feedbackAlertView = UIAlertController(title: "", message: "Would you mind giving us feedback?", preferredStyle: .alert)
+                feedbackAlertView.view.tintColor = self.tintColor
+                
+                feedbackAlertView.addAction(UIAlertAction(title: "No, thanks", style: .destructive, handler: nil))
+                
+                feedbackAlertView.addAction(UIAlertAction(title: "OK, sure", style: .default, handler: { (action) in
+                    if MFMailComposeViewController.canSendMail() {
+                        let mail = MFMailComposeViewController()
+                        mail.mailComposeDelegate = self
+                        mail.setToRecipients(["hello@lakoketa.com"])
+                        
+                        topController.present(mail, animated: self.usesAnimation) {
+                            self.debugLog("presentViewController() completed")
+                        }
+                    }
+                }))
+                topController.present(feedbackAlertView, animated: self.usesAnimation) {
+                    self.debugLog("presentViewController() completed")
+                }
+            }
+        }))
+        
+        alertView.addAction(UIAlertAction(title: "Yes", style: .default, handler: { (alert) in
+            self.presentNativeReviewPrompt()
+        }))
+        topController.present(alertView, animated: self.usesAnimation) {
+            self.debugLog("presentViewController() completed")
+        }
     }
     
     fileprivate func setUserHasRatedApp() {
@@ -646,7 +712,7 @@ open class AppRatingManager : NSObject {
     }
     
     fileprivate func _incrementCountForKeyType(_ keyString: String, canPromptForRating: Bool) {
-
+        
         let incrementKey = keyForAppRatingKeyString(keyString);
         
         // App's version. Not settable as the other ivars because that would be crazy.
@@ -907,5 +973,11 @@ open class AppRatingManager : NSObject {
         }
     }
     
+    //MARK: -
+    //MARK: MFMailComposeViewControllerDelegate
+    
+    public func mailComposeController(_ controller: MFMailComposeViewController, didFinishWith result: MFMailComposeResult, error: Error?) {
+        controller.dismiss(animated: true, completion: nil)
+    }
 }
 
